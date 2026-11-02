@@ -161,8 +161,6 @@ with st.sidebar:
 cfg = YEARLY_CONFIG[selected_year]
 CARRYOVER                = cfg["carryover"]
 COST_BASIS                = CARRYOVER["investment"]   # derived, not hardcoded
-FIXED_INSURANCE           = cfg["fixed_insurance"]
-FIXED_INVESTMENTS         = cfg["fixed_investments"]
 NOTES                     = cfg["notes"]
 GOALS_CONFIG              = cfg["goals_config"]
 MILESTONES                = cfg["milestones"]
@@ -196,26 +194,45 @@ def goal_status_label(pct):
 
 def load_monthly_finance(year):
     try:
-        rows = supabase.table("monthly_finance").select("*").eq("year", year).execute().data or []
+        rows = (
+            supabase.table("monthly_finance")
+            .select("*")
+            .eq("year", year)
+            .execute()
+            .data or []
+        )
     except Exception as e:
         st.error(f"Supabase load failed: {e}")
         rows = []
 
-    income = {m: 0.0 for m in MONTHS}
-    expenses = {m: 0.0 for m in MONTHS}
+    finance = {
+        "income": {},
+        "expenses": {},
+        "insurance": {},
+        "investments": {}
+    }
+
+    for category in finance:
+        finance[category] = {m: 0.0 for m in MONTHS}
 
     for row in rows:
         month = row.get("month")
-        if month in MONTHS:
-            income[month] = float(row.get("income") or 0)
-            expenses[month] = float(row.get("expenses") or 0)
 
-    return {"income": income, "expenses": expenses}
+        if month in MONTHS:
+            for category in finance:
+                finance[category][month] = float(
+                    row.get(category) or 0
+                )
+
+    return finance
 
 
 finance = load_monthly_finance(selected_year)
+
 income_map = finance["income"]
 expenses_map = finance["expenses"]
+insurance_map = finance["insurance"]
+investments_map = finance["investments"]
 
 
 def build_df():
@@ -226,8 +243,8 @@ def build_df():
         inc = income_map.get(m, 0)
         exp = expenses_map.get(m, 0)
 
-        ins = FIXED_INSURANCE[i]
-        inv = FIXED_INVESTMENTS[i]
+        ins = insurance_map.get(m, 0)
+        inv = investments_map.get(m, 0)
 
         net = inc - exp - inv - ins
         cum += net
@@ -276,12 +293,27 @@ def load_snapshots(year):
 
     return sorted(rows, key=lambda x: MONTH_INDEX.get(get_snap_date(x), 999))
 
-def save_monthly(year, month, income, expenses):
+def save_monthly(
+    year,
+    month,
+    income,
+    expenses,
+    insurance,
+    investments
+):
     try:
         supabase.table("monthly_finance").upsert(
-            {"year": year, "month": month, "income": income, "expenses": expenses},
+            {
+                "year": year,
+                "month": month,
+                "income": income,
+                "expenses": expenses,
+                "insurance": insurance,
+                "investments": investments
+            },
             on_conflict="year,month"
         ).execute()
+
     except Exception as e:
         st.error(f"Save failed for {month} {year}: {e}")
 
@@ -404,7 +436,14 @@ with st.sidebar:
                     new_inc = st.session_state[f"income_{m}_{selected_year}"]
                     if new_inc != income_map[m]:
                         income_map[m] = new_inc
-                        save_monthly(selected_year, m, new_inc, expenses_map[m])
+                        save_monthly(
+                            selected_year,
+                            m,
+                            new_inc,
+                            expenses_map[m],
+                            insurance_map[m],
+                            investments_map[m]
+                        )
                 st.success("Deposits saved!")
                 st.rerun()
 
@@ -421,8 +460,97 @@ with st.sidebar:
                     new_exp = st.session_state[f"expense_{m}_{selected_year}"]
                     if new_exp != expenses_map[m]:
                         expenses_map[m] = new_exp
-                        save_monthly(selected_year, m, income_map[m], new_exp)
+                        save_monthly(
+                            selected_year,
+                            m,
+                            income_map[m],
+                            new_exp,
+                            insurance_map[m],
+                            investments_map[m]
+                        )
                 st.success("Expenses saved!")
+                st.rerun()
+
+    # ── Insurance ──
+    st.markdown("### 🛡️ Insurance")
+
+    with st.expander("Monthly Insurance Payments", expanded=False):
+
+        with st.form(f"insurance_form_{selected_year}"):
+
+            for m in MONTHS:
+                st.number_input(
+                    m,
+                    min_value=0.0,
+                    max_value=100000.0,
+                    value=insurance_map[m],
+                    step=100.0,
+                    key=f"insurance_{m}_{selected_year}"
+                )
+
+            if st.form_submit_button(
+                "Save Insurance",
+                use_container_width=True
+            ):
+                for m in MONTHS:
+                    new_ins = st.session_state[
+                        f"insurance_{m}_{selected_year}"
+                    ]
+
+                    if new_ins != insurance_map[m]:
+                        insurance_map[m] = new_ins
+
+                        save_monthly(
+                            selected_year,
+                            m,
+                            income_map[m],
+                            expenses_map[m],
+                            new_ins,
+                            investments_map[m]
+                        )
+
+                st.success("Insurance payments saved!")
+                st.rerun()
+                
+    # ── Investments ──
+    st.markdown("### 📈 Investments")
+
+    with st.expander("Monthly Investment Contributions", expanded=False):
+
+        with st.form(f"investments_form_{selected_year}"):
+
+            for m in MONTHS:
+                st.number_input(
+                    m,
+                    min_value=0.0,
+                    max_value=100000.0,
+                    value=investments_map[m],
+                    step=100.0,
+                    key=f"investments_{m}_{selected_year}"
+                )
+
+            if st.form_submit_button(
+                "Save Investments",
+                use_container_width=True
+            ):
+                for m in MONTHS:
+                    new_inv = st.session_state[
+                        f"investments_{m}_{selected_year}"
+                    ]
+
+                    if new_inv != investments_map[m]:
+                        investments_map[m] = new_inv
+
+                        save_monthly(
+                            selected_year,
+                            m,
+                            income_map[m],
+                            expenses_map[m],
+                            insurance_map[m],
+                            new_inv
+                        )
+
+                st.success("Investment contributions saved!")
                 st.rerun()
 
     # ── Investment Snapshots ──
@@ -761,7 +889,7 @@ with col_b:
         labels=["Savings Deposited", "Total Insurance Coverage", "Invested", "Money Spent"],
         values=[
             total_income,
-            sum(FIXED_INSURANCE) + CARRYOVER["insurance"],
+            sum(insurance_map.values()) + CARRYOVER["insurance"],
             total_investments,
             total_expenses
         ],
@@ -919,12 +1047,16 @@ st.markdown('<div class="section-header">📋 Monthly Tracker</div>', unsafe_all
 tracker_df = pd.DataFrame([
     {
         "Month": m,
-        "Insurance": FIXED_INSURANCE[i],
-        "Investments": FIXED_INVESTMENTS[i],
+        "Insurance": insurance_map[m],
+        "Investments": investments_map[m],
         "Savings Deposited": income_map[m],
         "Money Spent": expenses_map[m],
-        "Kept for Future": income_map[m] - expenses_map[m] - FIXED_INVESTMENTS[i]
-                           - FIXED_INSURANCE[i],
+        "Kept for Future": (
+                income_map[m]
+                - expenses_map[m]
+                - investments_map[m]
+                - insurance_map[m]
+            ),
         "Notes": NOTES[i],
     }
     for i, m in enumerate(MONTHS)
